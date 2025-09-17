@@ -1,0 +1,19 @@
+# Google App Engine configuration (optional)
+runtime: python311
+service: default
+
+env_variables:
+  PORT: 8080
+  GSHEET_ID: ${GSHEET_ID}
+  GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: ${GOOGLE_SERVICE_ACCOUNT_JSON_BASE64}
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+  BROWSERLESS_URL: ${BROWSERLESS_URL}
+  BROWSERLESS_TOKEN: ${BROWSERLESS_TOKEN}
+
+automatic_scaling:
+  min_instances: 0
+  max_instances: 10
+  target_cpu_utilization: 0.6
+
+
+

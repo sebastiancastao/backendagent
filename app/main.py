@@ -28,19 +28,12 @@ from app.models import (
 # from app.services.sheets_dao import SheetsDAO
 # from app.services.scraper import CompanyScraper
 from app.utils.logging import setup_logging, get_logger
-try:
-    import httpx
-    import asyncio
-    from bs4 import BeautifulSoup
-    import re
-    import json
-    import openai
-    DEPENDENCIES_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Some dependencies not available: {e}")
-    DEPENDENCIES_AVAILABLE = False
-    # Create mock for deployment
-    openai = None
+import httpx
+import asyncio
+from bs4 import BeautifulSoup
+import re
+import json
+from openai import AsyncOpenAI
 
 
 # Setup logging
@@ -58,29 +51,7 @@ limiter = Limiter(key_func=get_remote_address) if HAS_RATE_LIMITING else None
 scraped_jobs = {}
 
 # Initialize OpenAI client
-if DEPENDENCIES_AVAILABLE and settings.openai_api_key:
-    openai.api_key = settings.openai_api_key
-    openai_client = openai
-else:
-    openai_client = None
-
-async def call_openai_chat(messages, model="gpt-3.5-turbo", temperature=0.3, max_tokens=500):
-    """Wrapper for OpenAI chat completions that works with different versions."""
-    try:
-        if not openai_client:
-            return {"choices": [{"message": {"content": "OpenAI not available"}}]}
-        
-        # Use older OpenAI API syntax
-        response = await openai.ChatCompletion.acreate(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
-        return response
-    except Exception as e:
-        logger.error(f"OpenAI API call failed: {e}")
-        return {"choices": [{"message": {"content": "AI analysis unavailable"}}]}
+openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
 
 async def scrape_company_simple(job_id: str, company_name: str, official_email: str, domain: str = None, competitor_domains: list = None, main_locations: list = None):
     """AI-Guided intelligent scraping with reward/punishment learning."""
@@ -1171,9 +1142,9 @@ async def analyze_growth_strategies(website: str, company_profile: dict, company
         If information is not available, use "Information not available from website content" as the value.
         """
         
-        response = await call_openai_chat(
-            messages=[{"role": "user", "content": growth_analysis_prompt}],
+        response = await openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": growth_analysis_prompt}],
             temperature=0.3,
             max_tokens=800
         )
@@ -3615,13 +3586,10 @@ async def health_check():
         # await sheets_dao.health_check()
         
         return {
-            "status": "healthy" if DEPENDENCIES_AVAILABLE else "limited",
-            "dependencies": DEPENDENCIES_AVAILABLE,
+            "status": "healthy",
             "services": {
                 "api": "running",
-                "ai": "enabled" if openai_client else "disabled",
-                "dataforseo": "enabled" if settings.dataforseo_base64 else "disabled",
-                "note": "AI Agent Company Data Scraper API"
+                "note": "Google Sheets integration disabled for testing"
             }
         }
     except Exception as e:

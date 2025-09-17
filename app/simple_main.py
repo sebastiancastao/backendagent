@@ -6,12 +6,13 @@ from fastapi.responses import JSONResponse
 from datetime import datetime
 import uuid
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
+from email_validator import validate_email, EmailNotValidError
 
 # Simple models for deployment
 class JobRequest(BaseModel):
     company_name: str
-    official_email: EmailStr
+    official_email: str
     domain: Optional[str] = None
 
 class JobResponse(BaseModel):
@@ -59,6 +60,15 @@ async def health_check():
 @app.post("/jobs", response_model=JobResponse)
 async def create_job(job_request: JobRequest, background_tasks: BackgroundTasks):
     """Create a new company analysis job."""
+    # Simple email validation
+    try:
+        validate_email(job_request.official_email)
+    except EmailNotValidError:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid email address"}
+        )
+    
     job_id = str(uuid.uuid4())
     
     # Create job entry

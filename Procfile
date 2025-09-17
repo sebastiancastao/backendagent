@@ -1,4 +1,5 @@
-web: uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}
+release: python -c "print('Starting deployment...')"
+web: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
 
 
 

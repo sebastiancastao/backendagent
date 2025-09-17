@@ -28,12 +28,21 @@ from app.models import (
 # from app.services.sheets_dao import SheetsDAO
 # from app.services.scraper import CompanyScraper
 from app.utils.logging import setup_logging, get_logger
-import httpx
-import asyncio
-from bs4 import BeautifulSoup
-import re
-import json
-from openai import AsyncOpenAI
+try:
+    import httpx
+    import asyncio
+    from bs4 import BeautifulSoup
+    import re
+    import json
+    from openai import AsyncOpenAI
+    DEPENDENCIES_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Some dependencies not available: {e}")
+    DEPENDENCIES_AVAILABLE = False
+    # Create mock classes for deployment
+    class AsyncOpenAI:
+        def __init__(self, *args, **kwargs):
+            pass
 
 
 # Setup logging
@@ -51,7 +60,10 @@ limiter = Limiter(key_func=get_remote_address) if HAS_RATE_LIMITING else None
 scraped_jobs = {}
 
 # Initialize OpenAI client
-openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+if DEPENDENCIES_AVAILABLE and settings.openai_api_key:
+    openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+else:
+    openai_client = None
 
 async def scrape_company_simple(job_id: str, company_name: str, official_email: str, domain: str = None, competitor_domains: list = None, main_locations: list = None):
     """AI-Guided intelligent scraping with reward/punishment learning."""
@@ -3586,10 +3598,13 @@ async def health_check():
         # await sheets_dao.health_check()
         
         return {
-            "status": "healthy",
+            "status": "healthy" if DEPENDENCIES_AVAILABLE else "limited",
+            "dependencies": DEPENDENCIES_AVAILABLE,
             "services": {
                 "api": "running",
-                "note": "Google Sheets integration disabled for testing"
+                "ai": "enabled" if openai_client else "disabled",
+                "dataforseo": "enabled" if settings.dataforseo_base64 else "disabled",
+                "note": "AI Agent Company Data Scraper API"
             }
         }
     except Exception as e:

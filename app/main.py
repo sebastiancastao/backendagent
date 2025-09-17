@@ -34,15 +34,13 @@ try:
     from bs4 import BeautifulSoup
     import re
     import json
-    from openai import AsyncOpenAI
+    import openai
     DEPENDENCIES_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Some dependencies not available: {e}")
     DEPENDENCIES_AVAILABLE = False
-    # Create mock classes for deployment
-    class AsyncOpenAI:
-        def __init__(self, *args, **kwargs):
-            pass
+    # Create mock for deployment
+    openai = None
 
 
 # Setup logging
@@ -61,9 +59,28 @@ scraped_jobs = {}
 
 # Initialize OpenAI client
 if DEPENDENCIES_AVAILABLE and settings.openai_api_key:
-    openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+    openai.api_key = settings.openai_api_key
+    openai_client = openai
 else:
     openai_client = None
+
+async def call_openai_chat(messages, model="gpt-3.5-turbo", temperature=0.3, max_tokens=500):
+    """Wrapper for OpenAI chat completions that works with different versions."""
+    try:
+        if not openai_client:
+            return {"choices": [{"message": {"content": "OpenAI not available"}}]}
+        
+        # Use older OpenAI API syntax
+        response = await openai.ChatCompletion.acreate(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        return response
+    except Exception as e:
+        logger.error(f"OpenAI API call failed: {e}")
+        return {"choices": [{"message": {"content": "AI analysis unavailable"}}]}
 
 async def scrape_company_simple(job_id: str, company_name: str, official_email: str, domain: str = None, competitor_domains: list = None, main_locations: list = None):
     """AI-Guided intelligent scraping with reward/punishment learning."""
@@ -1154,9 +1171,9 @@ async def analyze_growth_strategies(website: str, company_profile: dict, company
         If information is not available, use "Information not available from website content" as the value.
         """
         
-        response = await openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+        response = await call_openai_chat(
             messages=[{"role": "user", "content": growth_analysis_prompt}],
+            model="gpt-3.5-turbo",
             temperature=0.3,
             max_tokens=800
         )

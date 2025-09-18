@@ -284,5 +284,28 @@ class ContentPlanKeyword(BaseModel):
     priority_score: float
 
 
+class OnboardingFormData(BaseModel):
+    """Onboarding form submission data."""
+    website_access: bool = False
+    domain_access: bool = False
+    dedicated_email: bool = False
+    brand_assets: bool = False
+    google_analytics: bool = False
+    google_search_console: bool = False
+    google_business_profile: bool = False
+    google_tag_manager: bool = False
+    confirmation: bool = False
+    company_name: Optional[str] = None
+    contact_email: Optional[EmailStr] = None
+    submitted_at: Optional[datetime] = None
+
+
+class OnboardingResponse(BaseModel):
+    """Response for onboarding form submission."""
+    success: bool
+    message: str
+    submission_id: Optional[str] = None
+
+
 
 

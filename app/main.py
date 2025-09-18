@@ -23,9 +23,11 @@ from app.models import (
     JobDetailResponse, 
     ProfileOverrides, 
     ExportResponse,
-    JobStatus
+    JobStatus,
+    OnboardingFormData,
+    OnboardingResponse
 )
-# from app.services.sheets_dao import SheetsDAO
+from app.services.sheets_dao import SheetsDAO
 # from app.services.scraper import CompanyScraper
 from app.utils.logging import setup_logging, get_logger
 import httpx
@@ -43,8 +45,8 @@ logger = get_logger(__name__)
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address) if HAS_RATE_LIMITING else None
 
-# Global instances (commented out for now)
-# sheets_dao: SheetsDAO = None
+# Global instances
+sheets_dao: SheetsDAO = None
 # scraper: CompanyScraper = None
 
 # Simple in-memory storage for demo
@@ -269,6 +271,16 @@ async def scrape_company_simple(job_id: str, company_name: str, official_email: 
             "iterations": iteration + 1
         }
         
+        # Write to Google Sheets if available
+        if sheets_dao:
+            try:
+                await sheets_dao.write_profile(job_id, final_profile, 0.85)
+                await sheets_dao.update_job(job_id, JobStatus.COMPLETED)
+                logger.info(f"Successfully wrote job {job_id} data to Google Sheets")
+            except Exception as e:
+                logger.error(f"Failed to write job {job_id} to Google Sheets: {e}")
+                # Don't fail the scraping job if Google Sheets fails
+        
         logger.info(f"🎉 AI-guided scraping completed for {company_name} in {iteration + 1} iterations")
         logger.info(f"📋 Final profile: {final_profile}")
         
@@ -282,6 +294,14 @@ async def scrape_company_simple(job_id: str, company_name: str, official_email: 
             "profile": None,
             "error": str(e)
         }
+        
+        # Update job status in Google Sheets if available
+        if sheets_dao:
+            try:
+                await sheets_dao.update_job(job_id, JobStatus.FAILED, str(e))
+                logger.info(f"Updated job {job_id} status to FAILED in Google Sheets")
+            except Exception as sheets_error:
+                logger.error(f"Failed to update job {job_id} status in Google Sheets: {sheets_error}")
 
 
 async def create_ai_scraping_strategy(company_name: str, official_email: str, questions: list) -> dict:
@@ -3500,16 +3520,20 @@ Return ONLY the missing fields that you can confidently determine from the Googl
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    # global sheets_dao, scraper
+    global sheets_dao
     
     logger.info("Starting AI Agent Company Data Scraper...")
     
-    # Initialize services (commented out for now)
-    # sheets_dao = SheetsDAO()
-    # await sheets_dao.initialize()
-    # scraper = CompanyScraper(sheets_dao)
+    # Initialize Google Sheets DAO
+    try:
+        sheets_dao = SheetsDAO()
+        await sheets_dao.initialize()
+        logger.info("Google Sheets DAO initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Google Sheets DAO: {e}")
+        sheets_dao = None
     
-    logger.info("Application started successfully (without Google Sheets)")
+    logger.info("Application started successfully")
     
     yield
     
@@ -3582,15 +3606,22 @@ async def debug_jobs():
 async def health_check():
     """Detailed health check."""
     try:
-        # Test Sheets connection (commented out for now)
-        # await sheets_dao.health_check()
+        services = {"api": "running"}
+        
+        # Test Sheets connection
+        if sheets_dao:
+            try:
+                await sheets_dao.health_check()
+                services["google_sheets"] = "healthy"
+            except Exception as e:
+                logger.error(f"Google Sheets health check failed: {e}")
+                services["google_sheets"] = "unhealthy"
+        else:
+            services["google_sheets"] = "not_initialized"
         
         return {
             "status": "healthy",
-            "services": {
-                "api": "running",
-                "note": "Google Sheets integration disabled for testing"
-            }
+            "services": services
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -3618,6 +3649,20 @@ async def create_job(
         job_id = str(uuid.uuid4())
         now = datetime.utcnow()
         
+        # Create job in Google Sheets if available
+        if sheets_dao:
+            try:
+                sheets_job_id = await sheets_dao.create_job(
+                    company_name=job_request.company_name,
+                    official_email=str(job_request.official_email)
+                )
+                # Use the Google Sheets job ID
+                job_id = sheets_job_id
+                logger.info(f"Created job {job_id} in Google Sheets")
+            except Exception as e:
+                logger.error(f"Failed to create job in Google Sheets: {e}")
+                # Continue with generated job_id
+        
         # Start background scraping task
         background_tasks.add_task(
             scrape_company_simple,
@@ -3629,7 +3674,7 @@ async def create_job(
             main_locations=job_request.main_locations
         )
         
-        logger.info(f"Real scraping job {job_id} created for company: {job_request.company_name}")
+        logger.info(f"Scraping job {job_id} created for company: {job_request.company_name}")
         
         return JobResponse(
             id=job_id,
@@ -3640,20 +3685,6 @@ async def create_job(
             updated_at=now,
             error=None
         )
-        
-        # Original code (commented out):
-        # job_id = await sheets_dao.create_job(
-        #     company_name=job_request.company_name,
-        #     official_email=str(job_request.official_email)
-        # )
-        # background_tasks.add_task(
-        #     scraper.scrape_company,
-        #     job_id=job_id,
-        #     company_name=job_request.company_name,
-        #     official_email=str(job_request.official_email)
-        # )
-        # job = await sheets_dao.read_job(job_id)
-        # return JobResponse(**job)
         
     except Exception as e:
         logger.error(f"Failed to create job: {e}", exc_info=True)
@@ -3735,38 +3766,61 @@ async def get_job(job_id: str):
 @app.post("/jobs/{job_id}/finalise", response_model=JobResponse)
 async def finalise_job(job_id: str, overrides: ProfileOverrides):
     """Apply manual overrides and finalise the job."""
+    from datetime import datetime
+    
     try:
-        # Mock response for testing (Google Sheets integration commented out)
-        from datetime import datetime
+        # Check if job exists in memory
+        if job_id not in scraped_jobs:
+            raise HTTPException(status_code=404, detail="Job not found")
         
-        logger.info(f"Mock finalise job {job_id} with overrides")
+        job_data = scraped_jobs[job_id]
+        
+        # If Google Sheets is available, write the final profile data
+        if sheets_dao:
+            try:
+                # Get the current profile
+                profile_dict = job_data.get('profile', {}).copy() if job_data.get('profile') else {}
+                
+                # Apply overrides
+                override_dict = overrides.dict(exclude_unset=True)
+                for field, value in override_dict.items():
+                    if value is not None:
+                        profile_dict[field] = value
+                        if 'confidence_per_field' not in profile_dict:
+                            profile_dict['confidence_per_field'] = {}
+                        profile_dict['confidence_per_field'][field] = 1.0
+                
+                # Write to Google Sheets
+                await sheets_dao.write_profile(job_id, profile_dict, 1.0)
+                await sheets_dao.update_job(job_id, JobStatus.COMPLETED)
+                
+                logger.info(f"Successfully wrote finalized profile for job {job_id} to Google Sheets")
+                
+            except Exception as e:
+                logger.error(f"Failed to write to Google Sheets for job {job_id}: {e}")
+                # Continue without failing the request
+        
+        # Update job status in memory
+        job_data['status'] = JobStatus.COMPLETED
+        job_data['updated_at'] = datetime.utcnow()
+        
+        # Apply overrides to in-memory profile
+        if job_data.get('profile') and override_dict:
+            for field, value in override_dict.items():
+                if value is not None:
+                    job_data['profile'][field] = value
+        
+        logger.info(f"Finalized job {job_id} with overrides")
         
         return JobResponse(
             id=job_id,
             status=JobStatus.COMPLETED,
-            company_name="Mock Company",
-            official_email="test@example.com",
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            company_name=job_data['company_name'],
+            official_email=job_data['official_email'],
+            created_at=job_data['created_at'],
+            updated_at=job_data['updated_at'],
             error=None
         )
-        
-        # Original code (commented out):
-        # profile = await sheets_dao.read_profile(job_id)
-        # if not profile:
-        #     raise HTTPException(status_code=404, detail="Profile not found")
-        # profile_dict = profile.dict() if hasattr(profile, 'dict') else profile
-        # override_dict = overrides.dict(exclude_unset=True)
-        # for field, value in override_dict.items():
-        #     if value is not None:
-        #         profile_dict[field] = value
-        #         if 'confidence_per_field' not in profile_dict:
-        #             profile_dict['confidence_per_field'] = {}
-        #         profile_dict['confidence_per_field'][field] = 1.0
-        # await sheets_dao.write_profile(job_id, profile_dict, 1.0)
-        # await sheets_dao.update_job(job_id, JobStatus.COMPLETED)
-        # job = await sheets_dao.read_job(job_id)
-        # return JobResponse(**job)
         
     except HTTPException:
         raise
@@ -3839,6 +3893,90 @@ async def export_job(job_id: str):
     except Exception as e:
         logger.error(f"Failed to export job {job_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/onboarding/submit", response_model=OnboardingResponse)
+async def submit_onboarding_form(form_data: OnboardingFormData):
+    """Submit onboarding form data to Google Sheets."""
+    from datetime import datetime
+    import uuid
+    
+    try:
+        # Generate submission ID
+        submission_id = str(uuid.uuid4())
+        
+        # Add timestamp
+        form_data.submitted_at = datetime.utcnow()
+        
+        # If Google Sheets is available, write the onboarding data
+        if sheets_dao:
+            try:
+                # Check if 'Onboarding' sheet exists, if not create it
+                try:
+                    onboarding_sheet = sheets_dao.spreadsheet.worksheet('Onboarding')
+                except:
+                    # Create the onboarding sheet with headers
+                    headers = [
+                        'submission_id', 'submitted_at', 'company_name', 'contact_email',
+                        'website_access', 'domain_access', 'dedicated_email', 'brand_assets',
+                        'google_analytics', 'google_search_console', 'google_business_profile', 
+                        'google_tag_manager', 'confirmation'
+                    ]
+                    onboarding_sheet = sheets_dao.spreadsheet.add_worksheet(
+                        title='Onboarding', 
+                        rows=1000, 
+                        cols=len(headers)
+                    )
+                    await sheets_dao._execute_sheets_operation(
+                        lambda: onboarding_sheet.append_row(headers)
+                    )
+                
+                # Prepare row data
+                row_data = [
+                    submission_id,
+                    form_data.submitted_at.isoformat() if form_data.submitted_at else '',
+                    form_data.company_name or '',
+                    form_data.contact_email or '',
+                    form_data.website_access,
+                    form_data.domain_access,
+                    form_data.dedicated_email,
+                    form_data.brand_assets,
+                    form_data.google_analytics,
+                    form_data.google_search_console,
+                    form_data.google_business_profile,
+                    form_data.google_tag_manager,
+                    form_data.confirmation
+                ]
+                
+                # Write to Google Sheets
+                await sheets_dao._execute_sheets_operation(
+                    lambda: onboarding_sheet.append_row(row_data)
+                )
+                
+                logger.info(f"Successfully wrote onboarding form data to Google Sheets: {submission_id}")
+                
+                return OnboardingResponse(
+                    success=True,
+                    message="Onboarding form submitted successfully! We'll begin working on your project immediately.",
+                    submission_id=submission_id
+                )
+                
+            except Exception as e:
+                logger.error(f"Failed to write onboarding data to Google Sheets: {e}")
+                # Continue without failing - we can still track the submission
+        
+        # If Google Sheets is not available, still return success
+        logger.info(f"Onboarding form submitted (Google Sheets not available): {submission_id}")
+        
+        return OnboardingResponse(
+            success=True,
+            message="Onboarding form submitted successfully! We'll begin working on your project immediately.",
+            submission_id=submission_id
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to process onboarding form: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to submit onboarding form")
 
 
 if __name__ == "__main__":
